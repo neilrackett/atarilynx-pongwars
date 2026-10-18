@@ -1,0 +1,63 @@
+# Copyright (C) 2026 Neil Rackett
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+name: Release
+
+# Rolling release: build the cartridge with make, replace it on the
+# existing "latest" release, then move the lightweight "latest" tag to
+# this commit. The release's title and notes are left exactly as they
+# are: gh release upload touches its files only.
+
+on:
+  # Anything landing on main is a release: a merge or a direct push. Tag
+  # pushes do not match a branch filter, so the tag this workflow pushes
+  # cannot trigger it again.
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Two pushes in quick succession would otherwise race to replace the
+# file and move the tag. Newest commit wins instead.
+concurrency:
+  group: release
+  cancel-in-progress: true
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    # The push trigger already filters to main; this is what stops a
+    # manual run from some other branch releasing it.
+    if: github.ref == 'refs/heads/main'
+    steps:
+    - name: Checkout the code
+      uses: actions/checkout@v4
+
+    - name: Install cc65
+      # The runner image ships Google's Chrome apt source, which has
+      # served mismatched index files and failed `apt update` outright.
+      # Nothing here needs it.
+      run: |
+          sudo grep -l dl.google.com /etc/apt/sources.list.d/* | xargs -r sudo rm -f
+          sudo DEBIAN_FRONTEND=noninteractive apt-get update || true
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y cc65
+
+    - name: Build
+      # The splash converter needs only Python 3's standard library, which
+      # the runner has.
+      run: make
+
+    - name: Replace the cartridge on the latest release
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: gh release upload latest dist/pongwars.lnx --clobber
+
+    - name: Move latest to this commit
+      # After the upload, so a failed one leaves the tag where the file
+      # it matches was built.
+      run: |
+        git tag -f latest
+        git push origin +refs/tags/latest
